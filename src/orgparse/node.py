@@ -319,8 +319,6 @@ class OrgBaseNode(Sequence):
 
         # content
         self._line_items: list[LineItem] = []
-        self._lines: list[str] = []
-        self._lines_dirty = False
 
         self._properties: dict[str, PropertyValue] = {}
         self._property_drawer: PropertyDrawer | None = None
@@ -711,7 +709,6 @@ class OrgBaseNode(Sequence):
                 for index in range(end_index, start_index - 1, -1):
                     self._remove_line_item(index)
                 self._property_drawer = None
-                self._lines_dirty = True
             return
 
         drawer = self._property_drawer
@@ -746,7 +743,6 @@ class OrgBaseNode(Sequence):
                 )
                 self._insert_line_item(insert_index, entry)
                 drawer.entries.append(entry)
-        self._lines_dirty = True
 
     def get_property(self, key, val=None) -> Optional[PropertyValue]:
         """
@@ -766,14 +762,14 @@ class OrgBaseNode(Sequence):
     @classmethod
     def from_chunk(cls, env, lines):
         self = cls(env)
-        self._lines = list(lines)
-        self._line_items = [TextLine(line) for line in self._lines]
+        raw_lines = list(lines)
+        self._line_items = [TextLine(line) for line in raw_lines]
         self._parse_comments()
         return self
 
     def _parse_comments(self):
         special_comments: dict[str, list[str]] = {}
-        for line in self._lines:
+        for line in self._render_lines():
             parsed = parse_comment(line)
             if parsed:
                 (key, vals) = parsed
@@ -924,7 +920,7 @@ class OrgBaseNode(Sequence):
         See also: :meth:`get_heading`.
 
         """
-        return self._get_text('\n'.join(self._body_lines), format) if self._lines else ''
+        return self._get_text('\n'.join(self._body_lines), format) if self._line_items else ''
 
     @property
     def body(self) -> str:
@@ -952,7 +948,6 @@ class OrgBaseNode(Sequence):
         for offset, line in enumerate(new_lines):
             self._insert_line_item(insert_at + offset, TextLine(line))
         self._body_lines = list(new_lines)
-        self._lines_dirty = True
         self._refresh_timestamps_after_body_change()
 
     def _body_line_indices(self) -> list[int]:
@@ -1106,25 +1101,16 @@ class OrgBaseNode(Sequence):
         return "\n".join(self._render_lines())
 
     def _render_lines(self) -> list[str]:
-        if self._lines_dirty:
-            self._lines = [line.render() for line in self._line_items]
-            self._lines_dirty = False
-        return self._lines
+        return [line.render() for line in self._line_items]
 
     def _update_line_item(self, index: int, item: LineItem) -> None:
         self._line_items[index] = item
-        if self._lines:
-            self._lines[index] = item.render()
-        else:
-            self._lines_dirty = True
 
     def _insert_line_item(self, index: int, item: LineItem) -> None:
         self._line_items.insert(index, item)
-        self._lines_dirty = True
 
     def _remove_line_item(self, index: int) -> None:
         del self._line_items[index]
-        self._lines_dirty = True
 
     # todo hmm, not sure if it really belongs here and not to OrgRootNode?
     def get_file_property_list(self, property: str):  # noqa: A002
@@ -1177,7 +1163,7 @@ class OrgRootNode(OrgBaseNode):
 
     def _parse_pre(self):
         """Call parsers which must be called before tree structuring"""
-        ilines: Iterator[str] = iter(self._lines)
+        ilines: Iterator[str] = iter(self._render_lines())
         ilines = self._iparse_properties(ilines)
         ilines = self._iparse_timestamps(ilines)
         self._body_lines = list(ilines)
@@ -1226,7 +1212,7 @@ class OrgNode(OrgBaseNode):
         """Call parsers which must be called before tree structuring"""
         self._parse_heading()
         # FIXME: make the following parsers "lazy"
-        ilines: Iterator[str] = iter(self._lines)
+        ilines: Iterator[str] = iter(self._render_lines())
         try:
             next(ilines)  # skip heading
         except StopIteration:
@@ -1242,7 +1228,7 @@ class OrgNode(OrgBaseNode):
         self._sync_logbook_drawers_from_lines()
 
     def _parse_heading(self) -> None:
-        heading_line = HeadingLine.from_line(self._lines[0], self.env.all_todo_keys)
+        heading_line = HeadingLine.from_line(self._line_items[0].render(), self.env.all_todo_keys)
         self._heading_line = heading_line
         self._level = heading_line.level
         self._tags = list(heading_line.tags)
@@ -1301,7 +1287,7 @@ class OrgNode(OrgBaseNode):
 
     def _find_clock_line_indices(self) -> list[int]:
         indices: list[int] = []
-        for index, line in enumerate(self._lines):
+        for index, line in enumerate(self._render_lines()):
             if OrgDateClock.from_str(line):
                 indices.append(index)
         return indices
@@ -1325,8 +1311,6 @@ class OrgNode(OrgBaseNode):
             index = self._line_items.index(self._sdc_line)
             self._remove_line_item(index)
             self._sdc_line = None
-        else:
-            self._lines_dirty = True
 
     def _format_clock_line(self, clock: OrgDateClock) -> ClockLine:
         prefix = "  CLOCK: "
@@ -1745,7 +1729,6 @@ class OrgNode(OrgBaseNode):
                 insert_at = self._line_items.index(self._sdc_line) + 1
             for i, clock in enumerate(new_clocks):
                 self._insert_line_item(insert_at + i, self._format_clock_line(clock))
-        self._lines_dirty = True
 
     def has_date(self):
         """
@@ -1827,7 +1810,6 @@ class OrgNode(OrgBaseNode):
             existing_lines.append(entry)
 
         self._remove_empty_generated_logbooks()
-        self._lines_dirty = True
 
     def _repeat_task_insert_target(
         self,
